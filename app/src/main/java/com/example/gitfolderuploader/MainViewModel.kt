@@ -15,22 +15,43 @@ import androidx.lifecycle.viewModelScope
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+class ScanInfo(
+    val count: Int,
+    val bytes: Long,
+    val skipped: List<String>,
+    val preview: List<String>,
+)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
+    // ধাপ ১: অ্যাকাউন্ট
     var token by mutableStateOf("")
+    var rememberToken by mutableStateOf(true)
+    var account by mutableStateOf<String?>(null)
+    var verifying by mutableStateOf(false)
+    var tokenError by mutableStateOf<String?>(null)
+
+    // ধাপ ২: রিপো
     var repoInput by mutableStateOf("")
     var branch by mutableStateOf("main")
     var message by mutableStateOf("Upload via Git Folder Uploader")
-    var subDir by mutableStateOf("")
-    var excludes by mutableStateOf(".git, node_modules, build, .gradle, .idea, .DS_Store")
-    var rememberToken by mutableStateOf(true)
+    var createRepo by mutableStateOf(false)
+    var privateRepo by mutableStateOf(true)
 
+    // ধাপ ৩: ফোল্ডার
     var folderUri by mutableStateOf<Uri?>(null)
     var folderName by mutableStateOf("")
+    var subDir by mutableStateOf("")
+    var excludes by mutableStateOf(".git, node_modules, build, .gradle, .idea, .DS_Store")
+    var scanning by mutableStateOf(false)
+    var scanInfo by mutableStateOf<ScanInfo?>(null)
 
+    // ধাপ ৪: push
     var running by mutableStateOf(false)
     var done by mutableStateOf(0)
     var total by mutableStateOf(0)
@@ -54,6 +75,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         null
     }
 
+    val ready: Boolean
+        get() = token.isNotBlank() && parseRepo(repoInput) != null &&
+            branch.isNotBlank() && folderUri != null
+
     init {
         repoInput = prefs.getString("repo", "") ?: ""
         branch = prefs.getString("branch", "main") ?: "main"
@@ -61,6 +86,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         subDir = prefs.getString("subDir", "") ?: ""
         excludes = prefs.getString("excludes", excludes) ?: excludes
         rememberToken = prefs.getBoolean("rememberToken", true)
+        createRepo = prefs.getBoolean("createRepo", false)
+        privateRepo = prefs.getBoolean("privateRepo", true)
         token = securePrefs?.getString("token", "") ?: ""
 
         prefs.getString("folderUri", null)?.let { s ->
@@ -69,6 +96,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (granted) {
                 folderUri = uri
                 folderName = DocumentFile.fromTreeUri(app, uri)?.name ?: ""
+                scanFolder()
+            }
+        }
+        if (token.isNotBlank()) verifyToken()
+    }
+
+    fun onTokenChange(s: String) {
+        token = s
+        account = null
+        tokenError = null
+    }
+
+    fun verifyToken() {
+        val t = token.trim()
+        if (t.isEmpty()) return
+        verifying = true
+        tokenError = null
+        viewModelScope.launch {
+            try {
+                val login = fetchLogin(t)
+                account = login
+                if (repoInput.isBlank()) repoInput = "$login/"
+            } catch (e: Exception) {
+                account = null
+                tokenError = e.message
+            } finally {
+                verifying = false
             }
         }
     }
@@ -81,9 +135,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         folderUri = uri
         folderName = DocumentFile.fromTreeUri(app, uri)?.name ?: ""
+        resultUrl = null
+        scanFolder()
     }
 
-    private fun parseRepo(s: String): Pair<String, String>? {
+    private fun parseExcludes(): List<String> =
+        excludes.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+
+    /** push-এর আগে ফোল্ডারে কী কী আছে দেখায় (ls / git status-এর মতো) */
+    fun scanFolder() {
+        val uri = folderUri ?: return
+        val app = getApplication<Application>()
+        scanning = true
+        viewModelScope.launch {
+            try {
+                scanInfo = withContext(Dispatchers.IO) {
+                    val root = DocumentFile.fromTreeUri(app, uri)
+                        ?: throw GitHubException("ফোল্ডার খোলা যায়নি")
+                    val r = scanFolderTree(root, subDir.trim().trim('/'), parseExcludes())
+                    ScanInfo(
+                        count = r.files.size,
+                        bytes = r.files.sumOf { it.size },
+                        skipped = r.skipped,
+                        preview = r.files.take(60).map { it.repoPath },
+                    )
+                }
+            } catch (e: Exception) {
+                scanInfo = null
+                logs.clear()
+                logs += "❌ স্ক্যান ব্যর্থ: ${e.message}"
+            } finally {
+                scanning = false
+            }
+        }
+    }
+
+    fun parseRepo(s: String): Pair<String, String>? {
         val clean = s.trim()
             .removePrefix("https://").removePrefix("http://")
             .removePrefix("github.com/")
@@ -100,6 +187,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .putString("subDir", subDir)
             .putString("excludes", excludes)
             .putBoolean("rememberToken", rememberToken)
+            .putBoolean("createRepo", createRepo)
+            .putBoolean("privateRepo", privateRepo)
             .putString("folderUri", folderUri?.toString())
             .apply()
         securePrefs?.edit()?.putString("token", if (rememberToken) token else "")?.apply()
@@ -132,7 +221,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     branch = branch.trim(),
                     message = message.ifBlank { "Upload via Git Folder Uploader" },
                     subDir = subDir.trim(),
-                    excludes = excludes.split(",").map { it.trim() }.filter { it.isNotEmpty() },
+                    excludes = parseExcludes(),
+                    createRepo = createRepo,
+                    privateRepo = privateRepo,
                 )
                 resultUrl = GitHubUploader(
                     resolver = app.contentResolver,

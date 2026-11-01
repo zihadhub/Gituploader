@@ -22,6 +22,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class GitHubException(message: String, val code: Int = 0) : IOException(message)
@@ -34,9 +35,78 @@ data class UploadConfig(
     val message: String,
     val subDir: String,
     val excludes: List<String>,
+    val createRepo: Boolean,
+    val privateRepo: Boolean,
 )
 
-private data class LocalFile(val repoPath: String, val doc: DocumentFile, val size: Long)
+internal const val MAX_FILE_BYTES = 25L * 1024 * 1024 // এর চেয়ে বড় ফাইল বাদ
+
+internal data class LocalFile(val repoPath: String, val doc: DocumentFile, val size: Long)
+
+internal class ScanResult(val files: List<LocalFile>, val skipped: List<String>)
+
+/** ফোল্ডার ঘুরে সব ফাইলের তালিকা বানায় (git status-এর মতো প্রিভিউর জন্যও ব্যবহৃত) */
+internal fun scanFolderTree(root: DocumentFile, prefix: String, excludes: List<String>): ScanResult {
+    val files = ArrayList<LocalFile>()
+    val skipped = ArrayList<String>()
+
+    fun isExcluded(name: String): Boolean = excludes.any { p ->
+        if (p.startsWith("*")) name.endsWith(p.substring(1), ignoreCase = true) else name == p
+    }
+
+    fun walk(dir: DocumentFile, base: String) {
+        for (f in dir.listFiles()) {
+            val name = f.name ?: continue
+            if (isExcluded(name)) continue
+            val path = if (base.isEmpty()) name else "$base/$name"
+            when {
+                f.isDirectory -> walk(f, path)
+                f.isFile -> {
+                    val size = f.length()
+                    if (size > MAX_FILE_BYTES) skipped += "$path (${size / 1048576}MB — অনেক বড়)"
+                    else files += LocalFile(path, f, size)
+                }
+            }
+        }
+    }
+
+    walk(root, prefix)
+    files.sortBy { it.repoPath }
+    return ScanResult(files, skipped)
+}
+
+internal fun humanSize(b: Long): String = when {
+    b < 1024 -> "$b B"
+    b < 1024 * 1024 -> String.format(Locale.US, "%.1f KB", b / 1024.0)
+    else -> String.format(Locale.US, "%.1f MB", b / 1048576.0)
+}
+
+/** টোকেন যাচাই করে GitHub ইউজারনেম ফেরত দেয় */
+suspend fun fetchLogin(token: String): String = withContext(Dispatchers.IO) {
+    val client = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
+    val req = Request.Builder()
+        .url("https://api.github.com/user")
+        .header("Authorization", "Bearer $token")
+        .header("Accept", "application/vnd.github+json")
+        .build()
+    try {
+        client.newCall(req).execute().use {
+            val body = it.body?.string().orEmpty()
+            when (it.code) {
+                200 -> JSONObject(body).getString("login")
+                401 -> throw GitHubException("টোকেন ভুল বা মেয়াদোত্তীর্ণ", 401)
+                else -> throw GitHubException("যাচাই ব্যর্থ (${it.code})", it.code)
+            }
+        }
+    } catch (e: GitHubException) {
+        throw e
+    } catch (e: IOException) {
+        throw GitHubException("নেটওয়ার্ক সমস্যা: ${e.message}")
+    }
+}
 
 private class Resp(val code: Int, val body: String, val headers: Headers) {
     fun obj(): JSONObject = JSONObject(body)
@@ -59,9 +129,8 @@ class GitHubUploader(
     private val progress: (done: Int, total: Int) -> Unit,
 ) {
     private companion object {
-        const val MAX_FILE = 25L * 1024 * 1024   // এর চেয়ে বড় ফাইল বাদ
-        const val SMALL = 2L * 1024 * 1024       // এর চেয়ে বড় ফাইল একটা একটা করে যাবে
-        const val MIN_INTERVAL_MS = 850L         // GitHub secondary rate limit (~80/মিনিট) এড়াতে
+        const val SMALL = 2L * 1024 * 1024   // এর চেয়ে বড় ফাইল একটা একটা করে যাবে
+        const val MIN_INTERVAL_MS = 850L     // GitHub secondary rate limit (~80/মিনিট) এড়াতে
     }
 
     private val client = OkHttpClient.Builder()
@@ -130,12 +199,13 @@ class GitHubUploader(
     suspend fun run(root: DocumentFile): String {
         // ১. লোকাল ফাইল স্ক্যান
         log("📂 ফোল্ডার স্ক্যান হচ্ছে...")
-        val files = mutableListOf<LocalFile>()
-        val skipped = mutableListOf<String>()
-        withContext(Dispatchers.IO) { walk(root, cfg.subDir.trim('/'), files, skipped) }
-        skipped.forEach { log("⚠️ বাদ: $it") }
+        val scan = withContext(Dispatchers.IO) {
+            scanFolderTree(root, cfg.subDir.trim('/'), cfg.excludes)
+        }
+        val files = scan.files
+        scan.skipped.forEach { log("⚠️ বাদ: $it") }
         if (files.isEmpty()) throw GitHubException("আপলোড করার মতো কোনো ফাইল পাওয়া যায়নি")
-        log("✅ ${files.size} টি ফাইল পাওয়া গেছে")
+        log("✅ ${files.size} টি ফাইল পাওয়া গেছে (${humanSize(files.sumOf { it.size })})")
 
         // ২. রিপো ও ব্রাঞ্চ
         val (baseCommit, createBranch) = resolveBase()
@@ -211,16 +281,24 @@ class GitHubUploader(
                 JSONObject().put("sha", commitSha).put("force", false).toString()
             ).ok("ব্রাঞ্চ আপডেট")
         }
-        log("🎉 সম্পন্ন! ${files.size} টি ফাইল এক কমিটে আপলোড হয়েছে")
+        log("🎉 সম্পন্ন! ${files.size} টি ফাইল এক কমিটে push হয়েছে (${commitSha.take(7)})")
         return "https://github.com/${cfg.owner}/${cfg.repo}/commit/$commitSha"
     }
 
     /** (বেস কমিটের SHA, নতুন ব্রাঞ্চ বানাতে হবে কিনা) */
     private suspend fun resolveBase(): Pair<String, Boolean> {
-        val repoResp = call("GET", api)
-        when (repoResp.code) {
-            401 -> throw GitHubException("টোকেন ভুল বা মেয়াদোত্তীর্ণ")
-            404 -> throw GitHubException("রিপোজিটরি পাওয়া যায়নি, অথবা টোকেনের এই রিপোতে অ্যাক্সেস নেই")
+        var repoResp = call("GET", api)
+        if (repoResp.code == 401) throw GitHubException("টোকেন ভুল বা মেয়াদোত্তীর্ণ")
+        if (repoResp.code == 404) {
+            if (!cfg.createRepo) {
+                throw GitHubException(
+                    "রিপোজিটরি পাওয়া যায়নি, অথবা টোকেনের এই রিপোতে অ্যাক্সেস নেই " +
+                        "(নতুন বানাতে 'রিপো না থাকলে বানাও' অন করুন)"
+                )
+            }
+            log("🆕 রিপো নেই, বানানো হচ্ছে...")
+            createRepo()
+            repoResp = call("GET", api)
         }
         val repoObj = repoResp.ok("রিপো তথ্য").obj()
         val perms = repoObj.optJSONObject("permissions")
@@ -240,6 +318,20 @@ class GitHubUploader(
         }
         log("🌿 ব্রাঞ্চ '${cfg.branch}' নেই — নতুন বানানো হবে")
         return def to true
+    }
+
+    private suspend fun createRepo() {
+        val me = call("GET", "https://api.github.com/user").ok("ইউজার তথ্য").obj().getString("login")
+        val url = if (me.equals(cfg.owner, ignoreCase = true)) {
+            "https://api.github.com/user/repos"
+        } else {
+            "https://api.github.com/orgs/${cfg.owner}/repos"
+        }
+        call(
+            "POST", url,
+            JSONObject().put("name", cfg.repo).put("private", cfg.privateRepo).toString()
+        ).ok("রিপো তৈরি")
+        log("✅ রিপো তৈরি হয়েছে (${if (cfg.privateRepo) "private" else "public"})")
     }
 
     private suspend fun getRefSha(branch: String): String? {
@@ -276,31 +368,6 @@ class GitHubUploader(
         val body = "{\"encoding\":\"base64\",\"content\":\"$b64\"}"
         return call("POST", "$api/git/blobs", body)
             .ok("আপলোড (${lf.repoPath})").obj().getString("sha")
-    }
-
-    private fun walk(
-        dir: DocumentFile,
-        prefix: String,
-        out: MutableList<LocalFile>,
-        skipped: MutableList<String>,
-    ) {
-        for (f in dir.listFiles()) {
-            val name = f.name ?: continue
-            if (isExcluded(name)) continue
-            val path = if (prefix.isEmpty()) name else "$prefix/$name"
-            when {
-                f.isDirectory -> walk(f, path, out, skipped)
-                f.isFile -> {
-                    val size = f.length()
-                    if (size > MAX_FILE) skipped += "$path (${size / 1048576}MB — অনেক বড়)"
-                    else out += LocalFile(path, f, size)
-                }
-            }
-        }
-    }
-
-    private fun isExcluded(name: String): Boolean = cfg.excludes.any { p ->
-        if (p.startsWith("*")) name.endsWith(p.substring(1), ignoreCase = true) else name == p
     }
 
     private fun modeOf(path: String): String {
