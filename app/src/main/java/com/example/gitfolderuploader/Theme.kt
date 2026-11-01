@@ -10,49 +10,64 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
-private val DarkColors = darkColorScheme(
-    primary = Color(0xFF2EA043),
+// নীল + স্লেট: শান্ত, পেশাদার প্যালেট
+private val LightColors = lightColorScheme(
+    primary = Color(0xFF2563EB),
     onPrimary = Color.White,
-    secondary = Color(0xFF58A6FF),
-    onSecondary = Color(0xFF0D1117),
-    background = Color(0xFF0D1117),
-    onBackground = Color(0xFFE6EDF3),
-    surface = Color(0xFF161B22),
-    onSurface = Color(0xFFE6EDF3),
-    surfaceVariant = Color(0xFF21262D),
-    onSurfaceVariant = Color(0xFF8B949E),
-    outline = Color(0xFF30363D),
-    error = Color(0xFFF85149),
+    primaryContainer = Color(0xFFDBEAFE),
+    onPrimaryContainer = Color(0xFF1E3A8A),
+    secondary = Color(0xFF475569),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFE8EEFB),
+    onSecondaryContainer = Color(0xFF1E3A8A),
+    background = Color(0xFFF8FAFC),
+    onBackground = Color(0xFF0F172A),
+    surface = Color.White,
+    onSurface = Color(0xFF0F172A),
+    surfaceVariant = Color(0xFFF1F5F9),
+    onSurfaceVariant = Color(0xFF64748B),
+    outline = Color(0xFFE2E8F0),
+    outlineVariant = Color(0xFFCBD5E1),
+    error = Color(0xFFDC2626),
 )
 
-private val LightColors = lightColorScheme(
-    primary = Color(0xFF1A7F37),
-    onPrimary = Color.White,
-    secondary = Color(0xFF0969DA),
-    onSecondary = Color.White,
-    background = Color(0xFFF6F8FA),
-    onBackground = Color(0xFF1F2328),
-    surface = Color.White,
-    onSurface = Color(0xFF1F2328),
-    surfaceVariant = Color(0xFFEAEEF2),
-    onSurfaceVariant = Color(0xFF59636E),
-    outline = Color(0xFFD1D9E0),
-    error = Color(0xFFCF222E),
+private val DarkColors = darkColorScheme(
+    primary = Color(0xFF60A5FA),
+    onPrimary = Color(0xFF0B1220),
+    primaryContainer = Color(0xFF1E3A8A),
+    onPrimaryContainer = Color(0xFFDBEAFE),
+    secondary = Color(0xFF94A3B8),
+    onSecondary = Color(0xFF0B1220),
+    secondaryContainer = Color(0xFF1E2A44),
+    onSecondaryContainer = Color(0xFFDBEAFE),
+    background = Color(0xFF0B1120),
+    onBackground = Color(0xFFE5E7EB),
+    surface = Color(0xFF111827),
+    onSurface = Color(0xFFE5E7EB),
+    surfaceVariant = Color(0xFF1F2937),
+    onSurfaceVariant = Color(0xFF94A3B8),
+    outline = Color(0xFF273244),
+    outlineVariant = Color(0xFF334155),
+    error = Color(0xFFF87171),
 )
 
 private val AppShapes = Shapes(
-    small = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(10.dp),
     medium = RoundedCornerShape(12.dp),
-    large = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(18.dp),
 )
 
 // টার্মিনাল ব্লকের রং (দুই থিমেই গাঢ়)
-internal val TermBg = Color(0xFF010409)
-internal val TermFg = Color(0xFFC9D1D9)
-internal val TermDim = Color(0xFF8B949E)
-internal val TermOk = Color(0xFF3FB950)
-internal val TermWarn = Color(0xFFD29922)
-internal val TermErr = Color(0xFFF85149)
+internal val TermBg = Color(0xFF0B1220)
+internal val TermFg = Color(0xFFE2E8F0)
+internal val TermDim = Color(0xFF7C8AA0)
+internal val TermOk = Color(0xFF4ADE80)
+internal val TermWarn = Color(0xFFFBBF24)
+internal val TermErr = Color(0xFFF87171)
+
+@Composable
+internal fun successColor(): Color =
+    if (isSystemInDarkTheme()) Color(0xFF4ADE80) else Color(0xFF16A34A)
 
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {

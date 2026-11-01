@@ -42,6 +42,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var message by mutableStateOf("Upload via Git Folder Uploader")
     var createRepo by mutableStateOf(false)
     var privateRepo by mutableStateOf(true)
+    var repos by mutableStateOf<List<RepoInfo>>(emptyList())
+    var loadingRepos by mutableStateOf(false)
+    var reposError by mutableStateOf<String?>(null)
 
     // ধাপ ৩: ফোল্ডার
     var folderUri by mutableStateOf<Uri?>(null)
@@ -106,6 +109,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         token = s
         account = null
         tokenError = null
+        repos = emptyList()
+    }
+
+    /** টোকেনের অ্যাকাউন্টের push-যোগ্য রিপোগুলোর তালিকা আনে */
+    fun loadRepos(force: Boolean = false) {
+        val t = token.trim()
+        if (t.isEmpty() || loadingRepos) return
+        if (repos.isNotEmpty() && !force) return
+        loadingRepos = true
+        reposError = null
+        viewModelScope.launch {
+            try {
+                repos = fetchRepos(t)
+            } catch (e: Exception) {
+                reposError = e.message
+            } finally {
+                loadingRepos = false
+            }
+        }
+    }
+
+    fun pickRepo(r: RepoInfo) {
+        repoInput = r.fullName
+        if (r.defaultBranch.isNotBlank()) branch = r.defaultBranch
     }
 
     fun verifyToken() {

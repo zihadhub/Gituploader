@@ -108,6 +108,58 @@ suspend fun fetchLogin(token: String): String = withContext(Dispatchers.IO) {
     }
 }
 
+data class RepoInfo(
+    val fullName: String,
+    val isPrivate: Boolean,
+    val defaultBranch: String,
+)
+
+/** টোকেনের মাধ্যমে যে রিপোগুলোতে push করা যায় তার তালিকা (সাম্প্রতিক push আগে) */
+suspend fun fetchRepos(token: String): List<RepoInfo> = withContext(Dispatchers.IO) {
+    val client = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(40, TimeUnit.SECONDS)
+        .build()
+    val out = ArrayList<RepoInfo>()
+    try {
+        for (page in 1..10) {
+            val req = Request.Builder()
+                .url(
+                    "https://api.github.com/user/repos?per_page=100&page=$page" +
+                        "&sort=pushed&affiliation=owner,collaborator,organization_member"
+                )
+                .header("Authorization", "Bearer $token")
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .build()
+            val n = client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (resp.code == 401) throw GitHubException("টোকেন ভুল বা মেয়াদোত্তীর্ণ", 401)
+                if (resp.code != 200) throw GitHubException("তালিকা আনা ব্যর্থ (${resp.code})", resp.code)
+                val arr = JSONArray(body)
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val canPush = o.optJSONObject("permissions")?.optBoolean("push", true) ?: true
+                    if (canPush && !o.optBoolean("archived", false)) {
+                        out += RepoInfo(
+                            fullName = o.getString("full_name"),
+                            isPrivate = o.optBoolean("private", false),
+                            defaultBranch = o.optString("default_branch", "main"),
+                        )
+                    }
+                }
+                arr.length()
+            }
+            if (n < 100) break
+        }
+    } catch (e: GitHubException) {
+        throw e
+    } catch (e: IOException) {
+        throw GitHubException("নেটওয়ার্ক সমস্যা: ${e.message}")
+    }
+    out
+}
+
 private class Resp(val code: Int, val body: String, val headers: Headers) {
     fun obj(): JSONObject = JSONObject(body)
 

@@ -18,7 +18,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -36,6 +42,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -48,6 +55,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -75,15 +83,15 @@ class MainActivity : ComponentActivity() {
 private fun Pill(text: String, color: Color) {
     Surface(
         shape = RoundedCornerShape(50),
-        color = color.copy(alpha = 0.12f),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.45f)),
+        color = color.copy(alpha = 0.10f),
+        border = BorderStroke(1.dp, color.copy(alpha = 0.35f)),
     ) {
         Text(
             text,
             color = color,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
         )
     }
 }
@@ -92,6 +100,7 @@ private fun Pill(text: String, color: Color) {
 private fun StepCard(
     number: Int,
     title: String,
+    subtitle: String?,
     done: Boolean,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -102,25 +111,34 @@ private fun StepCard(
         shape = MaterialTheme.shapes.large,
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Box(
                     Modifier
-                        .size(26.dp)
-                        .background(if (done) cs.primary else cs.surfaceVariant, CircleShape),
+                        .size(28.dp)
+                        .background(if (done) successColor() else cs.primaryContainer, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         if (done) "✓" else "$number",
-                        color = if (done) cs.onPrimary else cs.onSurfaceVariant,
+                        color = if (done) Color.White else cs.onPrimaryContainer,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                     )
                 }
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Column {
+                    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    if (subtitle != null) {
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                    }
+                }
             }
             content()
         }
@@ -138,6 +156,7 @@ private fun Field(
     hint: String? = null,
     trailing: (@Composable () -> Unit)? = null,
 ) {
+    val cs = MaterialTheme.colorScheme
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
@@ -146,6 +165,13 @@ private fun Field(
         singleLine = true,
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier.fillMaxWidth(),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = cs.primary,
+            unfocusedBorderColor = cs.outlineVariant,
+            focusedContainerColor = cs.background,
+            unfocusedContainerColor = cs.background,
+            disabledContainerColor = cs.background,
+        ),
         visualTransformation = if (password && !visible) PasswordVisualTransformation() else VisualTransformation.None,
         trailingIcon = trailing,
         supportingText = if (hint != null) {
@@ -159,7 +185,7 @@ private fun SwitchRow(title: String, subtitle: String?, checked: Boolean, enable
     Row(
         Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
@@ -182,7 +208,7 @@ private fun RowScope.Stat(label: String, value: String) {
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier.weight(1f),
     ) {
-        Column(Modifier.padding(10.dp)) {
+        Column(Modifier.padding(12.dp)) {
             Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -192,16 +218,24 @@ private fun RowScope.Stat(label: String, value: String) {
 @Composable
 private fun Terminal(prompt: String, lines: List<String>) {
     Surface(color = TermBg, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(prompt, color = TermDim, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
             lines.takeLast(150).forEach { l ->
-                val c = when {
-                    l.startsWith("❌") -> TermErr
-                    l.startsWith("⚠") || l.startsWith("⏳") || l.startsWith("🔁") -> TermWarn
-                    l.startsWith("🎉") || l.startsWith("✅") -> TermOk
-                    else -> TermFg
+                val (mark, color) = when {
+                    l.startsWith("❌") -> "✗" to TermErr
+                    l.startsWith("⚠") || l.startsWith("⏳") || l.startsWith("🔁") -> "!" to TermWarn
+                    l.startsWith("🎉") || l.startsWith("✅") -> "✓" to TermOk
+                    l.startsWith("ℹ") -> "i" to TermDim
+                    else -> "›" to TermFg
                 }
-                Text(l, color = c, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                // শুরুর ইমোজি বাদ দিয়ে পরিচ্ছন্ন টেক্সট দেখানো
+                val clean = l.dropWhile { !it.isLetterOrDigit() || it == 'ℹ' }
+                Text(
+                    "$mark $clean",
+                    color = color,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                )
             }
         }
     }
@@ -210,10 +244,94 @@ private fun Terminal(prompt: String, lines: List<String>) {
 // ───────────────────────── মূল স্ক্রিন ─────────────────────────
 
 @Composable
+private fun RepoPicker(vm: MainViewModel, onDismiss: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val ok = successColor()
+    var query by remember { mutableStateOf("") }
+    val list = vm.repos.filter { it.fullName.contains(query.trim(), ignoreCase = true) }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = cs.surface,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .heightIn(max = 560.dp),
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("রিপো বাছাই করুন", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Row {
+                        TextButton(onClick = { vm.loadRepos(force = true) }, enabled = !vm.loadingRepos) { Text("রিফ্রেশ") }
+                        TextButton(onClick = onDismiss) { Text("বন্ধ") }
+                    }
+                }
+                Field("রিপো খুঁজুন", query, { query = it })
+                when {
+                    vm.loadingRepos -> Text(
+                        "তালিকা আনা হচ্ছে…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = cs.onSurfaceVariant,
+                    )
+                    vm.reposError != null -> Text(
+                        vm.reposError ?: "",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = cs.error,
+                    )
+                    list.isEmpty() -> Text(
+                        if (vm.repos.isEmpty()) "এই টোকেনে push করার মতো কোনো রিপো পাওয়া যায়নি" else "কিছু মেলেনি",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = cs.onSurfaceVariant,
+                    )
+                    else -> {
+                        Text(
+                            "${list.size} টি রিপো",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                        LazyColumn(Modifier.weight(1f, fill = false)) {
+                            items(list, key = { it.fullName }) { r ->
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            vm.pickRepo(r)
+                                            onDismiss()
+                                        }
+                                        .padding(vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(r.fullName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                                        Text(
+                                            "ডিফল্ট ব্রাঞ্চ: ${r.defaultBranch}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = cs.onSurfaceVariant,
+                                        )
+                                    }
+                                    if (r.isPrivate) Pill("private", cs.onSurfaceVariant) else Pill("public", ok)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun Screen(vm: MainViewModel = viewModel()) {
     val ctx = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val cs = MaterialTheme.colorScheme
+    val ok = successColor()
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) vm.onFolderPicked(uri)
@@ -232,32 +350,36 @@ private fun Screen(vm: MainViewModel = viewModel()) {
                 .systemBarsPadding()
                 .imePadding()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             // হেডার
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("Git Folder Uploader", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text(
-                        "ফোল্ডার বাছাই  →  টোকেন  →  Push",
-                        style = MaterialTheme.typography.bodySmall,
+                        "Git Folder Uploader",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "পুরো ফোল্ডার, এক কমিটে GitHub-এ",
+                        style = MaterialTheme.typography.bodyMedium,
                         color = cs.onSurfaceVariant,
                     )
                 }
                 val acc = vm.account
-                if (acc != null) Pill("● @$acc", cs.primary) else Pill("সংযুক্ত নয়", cs.onSurfaceVariant)
+                if (acc != null) Pill("@$acc", ok) else Pill("সংযুক্ত নয়", cs.onSurfaceVariant)
             }
 
             // ধাপ ১ — অ্যাকাউন্ট
-            StepCard(1, "অ্যাকাউন্ট (Access Token)", vm.account != null) {
+            StepCard(1, "অ্যাকাউন্ট", "GitHub Personal Access Token", vm.account != null) {
                 var visible by remember { mutableStateOf(false) }
                 Field(
-                    "Personal Access Token", vm.token, vm::onTokenChange,
+                    "Access Token", vm.token, vm::onTokenChange,
                     enabled = !vm.running, password = true, visible = visible,
                     trailing = {
                         TextButton(onClick = { visible = !visible }) { Text(if (visible) "লুকান" else "দেখুন") }
@@ -270,13 +392,15 @@ private fun Screen(vm: MainViewModel = viewModel()) {
                     OutlinedButton(
                         onClick = vm::verifyToken,
                         enabled = vm.token.isNotBlank() && !vm.verifying && !vm.running,
+                        shape = MaterialTheme.shapes.medium,
                     ) { Text("যাচাই করুন") }
                     when {
-                        vm.verifying -> Text("যাচাই হচ্ছে…", style = MaterialTheme.typography.bodySmall)
+                        vm.verifying -> Text("যাচাই হচ্ছে…", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                         vm.account != null -> Text(
-                            "✓ @${vm.account} হিসেবে সংযুক্ত",
-                            color = cs.primary,
+                            "@${vm.account} হিসেবে সংযুক্ত",
+                            color = ok,
                             style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
                         )
                         vm.tokenError != null -> Text(
                             vm.tokenError ?: "",
@@ -290,18 +414,39 @@ private fun Screen(vm: MainViewModel = viewModel()) {
                     Text("টোকেন এনক্রিপ্ট করে মনে রাখো", style = MaterialTheme.typography.bodyMedium)
                 }
                 Text(
-                    "Classic: repo স্কোপ   |   Fine-grained: Contents → Read and write",
+                    "Classic: repo (প্রয়োজনে workflow)   ·   Fine-grained: Contents → Read and write",
                     style = MaterialTheme.typography.bodySmall,
                     color = cs.onSurfaceVariant,
                 )
             }
 
             // ধাপ ২ — রিপোজিটরি
-            StepCard(2, "রিপোজিটরি", vm.parseRepo(vm.repoInput) != null && vm.branch.isNotBlank()) {
+            StepCard(
+                2, "রিপোজিটরি", "কোথায় push হবে",
+                vm.parseRepo(vm.repoInput) != null && vm.branch.isNotBlank(),
+            ) {
+                var showPicker by remember { mutableStateOf(false) }
+                FilledTonalButton(
+                    onClick = {
+                        showPicker = true
+                        vm.loadRepos()
+                    },
+                    enabled = vm.token.isNotBlank() && !vm.running,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                ) {
+                    Text(
+                        if (vm.token.isBlank()) "রিপো বাছাই (আগে টোকেন দিন)" else "আমার রিপোগুলো থেকে বাছাই করুন",
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
                 Field(
                     "রিপো (owner/repo বা লিংক)", vm.repoInput, { vm.repoInput = it },
-                    enabled = !vm.running, hint = "যেমন: eizus/my-project",
+                    enabled = !vm.running, hint = "তালিকা থেকে বাছাই করুন, অথবা নতুন রিপোর নাম হাতে লিখুন",
                 )
+                if (showPicker) RepoPicker(vm) { showPicker = false }
                 Field("ব্রাঞ্চ", vm.branch, { vm.branch = it }, enabled = !vm.running)
                 Field("কমিট মেসেজ", vm.message, { vm.message = it }, enabled = !vm.running)
                 SwitchRow(
@@ -315,35 +460,39 @@ private fun Screen(vm: MainViewModel = viewModel()) {
             }
 
             // ধাপ ৩ — ফোল্ডার
-            StepCard(3, "ফোল্ডার", vm.folderUri != null) {
+            StepCard(3, "ফোল্ডার", "যে প্রজেক্ট আপলোড করবেন", vm.folderUri != null) {
                 var showPreview by remember { mutableStateOf(false) }
                 var advanced by remember { mutableStateOf(false) }
 
                 FilledTonalButton(
                     onClick = { picker.launch(null) },
                     enabled = !vm.running,
+                    shape = MaterialTheme.shapes.medium,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp),
+                        .height(50.dp),
                 ) {
-                    Text(if (vm.folderName.isEmpty()) "📁  ফোল্ডার বাছাই করুন" else "📁  ${vm.folderName}  ·  বদলান")
+                    Text(
+                        if (vm.folderName.isEmpty()) "ফোল্ডার বাছাই করুন" else "${vm.folderName}  ·  বদলান",
+                        fontWeight = FontWeight.Medium,
+                    )
                 }
 
                 if (vm.scanning) {
                     Text("স্ক্যান হচ্ছে…", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                 }
                 vm.scanInfo?.let { info ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Stat("ফাইল", "${info.count}")
                         Stat("মোট সাইজ", humanSize(info.bytes))
                         Stat("বাদ (বড়)", "${info.skipped.size}")
                     }
                     TextButton(onClick = { showPreview = !showPreview }) {
-                        Text(if (showPreview) "▾ ফাইলের তালিকা লুকান" else "▸ ফাইলের তালিকা দেখুন")
+                        Text(if (showPreview) "▾  ফাইলের তালিকা লুকান" else "▸  ফাইলের তালিকা দেখুন")
                     }
                     if (showPreview) {
                         Surface(color = TermBg, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 info.preview.forEach {
                                     Text("+ $it", color = TermOk, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
                                 }
@@ -362,7 +511,7 @@ private fun Screen(vm: MainViewModel = viewModel()) {
                 }
 
                 TextButton(onClick = { advanced = !advanced }) {
-                    Text(if (advanced) "▾ অ্যাডভান্সড" else "▸ অ্যাডভান্সড")
+                    Text(if (advanced) "▾  অ্যাডভান্সড" else "▸  অ্যাডভান্সড")
                 }
                 if (advanced) {
                     Field(
@@ -376,25 +525,27 @@ private fun Screen(vm: MainViewModel = viewModel()) {
                     OutlinedButton(
                         onClick = vm::scanFolder,
                         enabled = vm.folderUri != null && !vm.scanning && !vm.running,
+                        shape = MaterialTheme.shapes.medium,
                     ) { Text("আবার স্ক্যান") }
                 }
 
                 Text(
-                    "Download বা স্টোরেজের মূল ফোল্ডার বাছাই করা যায় না — তার ভেতরের প্রজেক্ট ফোল্ডারটি বাছাই করুন।",
+                    "Download বা স্টোরেজের মূল ফোল্ডার বাছাই করা যায় না। তার ভেতরের প্রজেক্ট ফোল্ডারটি বাছাই করুন।",
                     style = MaterialTheme.typography.bodySmall,
                     color = cs.onSurfaceVariant,
                 )
             }
 
             // ধাপ ৪ — Push
-            StepCard(4, "Push", vm.resultUrl != null) {
+            StepCard(4, "Push", "এক কমিটে সব ফাইল", vm.resultUrl != null) {
                 if (vm.running) {
                     OutlinedButton(
                         onClick = vm::cancel,
+                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(52.dp),
-                    ) { Text("⛔  বাতিল") }
+                    ) { Text("বাতিল করুন") }
                 } else {
                     Button(
                         onClick = vm::start,
@@ -403,7 +554,7 @@ private fun Screen(vm: MainViewModel = viewModel()) {
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(52.dp),
-                    ) { Text("⬆  Push to GitHub", fontWeight = FontWeight.SemiBold) }
+                    ) { Text("Push to GitHub", fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
                     if (!vm.ready) {
                         Text(
                             "টোকেন, রিপো ও ফোল্ডার দিলে বাটন চালু হবে",
@@ -417,7 +568,10 @@ private fun Screen(vm: MainViewModel = viewModel()) {
                     val pct = if (vm.total == 0) 0 else vm.done * 100 / vm.total
                     LinearProgressIndicator(
                         progress = { if (vm.total == 0) 0f else vm.done.toFloat() / vm.total },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(50)),
                         color = cs.primary,
                         trackColor = cs.surfaceVariant,
                     )
@@ -435,8 +589,11 @@ private fun Screen(vm: MainViewModel = viewModel()) {
                 vm.resultUrl?.let { url ->
                     FilledTonalButton(
                         onClick = { uriHandler.openUri(url) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("🔗  GitHub-এ দেখুন") }
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                    ) { Text("GitHub-এ দেখুন") }
                 }
             }
         }
