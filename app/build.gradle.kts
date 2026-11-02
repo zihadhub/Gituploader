@@ -15,6 +15,19 @@ android {
         versionName = "1.0"
     }
 
+    // স্থায়ী ডিবাগ কী থাকলে প্রতিবার একই সাইনিং হয়, তাই নতুন APK পুরনোটার ওপর আপডেট হিসেবে বসে
+    signingConfigs {
+        getByName("debug") {
+            val ks = file("debug.keystore")
+            if (ks.exists()) {
+                storeFile = ks
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

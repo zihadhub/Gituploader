@@ -14,11 +14,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import java.io.File
 
 class ScanInfo(
     val count: Int,
@@ -42,9 +42,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var message by mutableStateOf("Upload via Git Folder Uploader")
     var createRepo by mutableStateOf(false)
     var privateRepo by mutableStateOf(true)
+    var clearAfterPush by mutableStateOf(false)
+    var skipWorkflows by mutableStateOf(false)
     var repos by mutableStateOf<List<RepoInfo>>(emptyList())
     var loadingRepos by mutableStateOf(false)
     var reposError by mutableStateOf<String?>(null)
+
+    // বিল্ড ট্যাব
+    var runs by mutableStateOf<List<RunInfo>>(emptyList())
+    var loadingRuns by mutableStateOf(false)
+    var runsError by mutableStateOf<String?>(null)
+    var busyRunId by mutableStateOf<Long?>(null)   // -1 = একসাথে অনেকগুলো মোছা চলছে
+    var buildMsg by mutableStateOf<String?>(null)
+    var buildMsgError by mutableStateOf(false)
+    val apkFiles = mutableStateListOf<File>()
+
+    // সেভ করা অ্যাকাউন্টের নাম (একাধিক টোকেন)
+    val savedAccounts = mutableStateListOf<String>()
 
     // ধাপ ৩: ফোল্ডার
     var folderUri by mutableStateOf<Uri?>(null)
@@ -55,13 +69,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var scanInfo by mutableStateOf<ScanInfo?>(null)
 
     // ধাপ ৪: push
-    var running by mutableStateOf(false)
-    var done by mutableStateOf(0)
-    var total by mutableStateOf(0)
-    var resultUrl by mutableStateOf<String?>(null)
-    val logs = mutableStateListOf<String>()
-
-    private var job: Job? = null
+    // আপলোড এখন ফোরগ্রাউন্ড সার্ভিসে চলে; অবস্থা UploadHub-এ থাকে
+    val running: Boolean get() = UploadHub.running
+    val done: Int get() = UploadHub.done
+    val total: Int get() = UploadHub.total
+    var resultUrl: String?
+        get() = UploadHub.resultUrl
+        set(v) { UploadHub.resultUrl = v }
+    val logs get() = UploadHub.logs
 
     private val prefs: SharedPreferences =
         app.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -91,7 +106,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         rememberToken = prefs.getBoolean("rememberToken", true)
         createRepo = prefs.getBoolean("createRepo", false)
         privateRepo = prefs.getBoolean("privateRepo", true)
+        clearAfterPush = prefs.getBoolean("clearAfterPush", false)
+        skipWorkflows = prefs.getBoolean("skipWorkflows", false)
         token = securePrefs?.getString("token", "") ?: ""
+        refreshAccounts()
 
         prefs.getString("folderUri", null)?.let { s ->
             val uri = Uri.parse(s)
@@ -103,6 +121,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         if (token.isNotBlank()) verifyToken()
+    }
+
+    private fun refreshAccounts() {
+        savedAccounts.clear()
+        savedAccounts.addAll(Accounts.list(securePrefs).map { it.first })
+    }
+
+    /** সেভ করা অন্য অ্যাকাউন্টে বদলায় */
+    fun switchAccount(name: String) {
+        if (UploadHub.running) return
+        val t = Accounts.list(securePrefs).firstOrNull { it.first == name }?.second ?: return
+        token = t
+        account = null
+        tokenError = null
+        repos = emptyList()
+        runs = emptyList()
+        buildMsg = null
+        repoInput = "$name/"
+        securePrefs?.edit()?.putString("token", t)?.apply()
+        verifyToken()
+    }
+
+    /** নতুন অ্যাকাউন্টের টোকেন দেওয়ার জন্য ঘর ফাঁকা করে */
+    fun newAccount() {
+        if (UploadHub.running) return
+        onTokenChange("")
+        repoInput = ""
+    }
+
+    /** একটি সেভ করা অ্যাকাউন্টের টোকেন ফোন থেকে মুছে ফেলে */
+    fun removeAccount(name: String) {
+        if (UploadHub.running) return
+        if (account == name) {
+            logout(clearAll = false)
+        } else {
+            Accounts.remove(securePrefs, name)
+            refreshAccounts()
+        }
     }
 
     fun onTokenChange(s: String) {
@@ -135,6 +191,144 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (r.defaultBranch.isNotBlank()) branch = r.defaultBranch
     }
 
+    // ───────────── বিল্ড ট্র্যাকার ও APK ─────────────
+
+    private fun actionsApi(): ActionsApi? {
+        val pair = parseRepo(repoInput)
+        if (token.isBlank() || pair == null) {
+            buildMsg = "আগে আপলোড ট্যাবে টোকেন ও রিপো দিন"
+            buildMsgError = true
+            return null
+        }
+        return ActionsApi(token.trim(), pair.first, pair.second)
+    }
+
+    private fun apkDir(): File = File(getApplication<Application>().filesDir, "apks").apply { mkdirs() }
+
+    fun loadApkFiles() {
+        val files = apkDir().listFiles()?.filter { it.extension == "apk" }
+            ?.sortedByDescending { it.lastModified() } ?: emptyList()
+        apkFiles.clear()
+        apkFiles.addAll(files)
+    }
+
+    fun refreshRuns(silent: Boolean = false) {
+        val api = actionsApi() ?: return
+        if (loadingRuns) return
+        if (!silent) loadingRuns = true
+        viewModelScope.launch {
+            try {
+                runs = api.runs()
+                runsError = null
+            } catch (e: Exception) {
+                if (!silent) runsError = e.message
+            } finally {
+                loadingRuns = false
+            }
+        }
+    }
+
+    fun downloadApk(run: RunInfo, onReady: (File) -> Unit) {
+        val api = actionsApi() ?: return
+        if (busyRunId != null) return
+        busyRunId = run.id
+        buildMsg = "APK নামানো হচ্ছে…"
+        buildMsgError = false
+        viewModelScope.launch {
+            try {
+                val app = getApplication<Application>()
+                val file = api.downloadApk(run.id, "run${run.number}", apkDir(), app.cacheDir)
+                loadApkFiles()
+                buildMsg = "APK প্রস্তুত: ${file.name}"
+                onReady(file)
+            } catch (e: Exception) {
+                buildMsg = e.message
+                buildMsgError = true
+            } finally {
+                busyRunId = null
+            }
+        }
+    }
+
+    fun deleteRun(run: RunInfo) {
+        val api = actionsApi() ?: return
+        if (busyRunId != null) return
+        busyRunId = run.id
+        viewModelScope.launch {
+            try {
+                api.deleteRun(run.id)
+                runs = runs.filter { it.id != run.id }
+                buildMsg = "বিল্ড #${run.number} মুছে ফেলা হয়েছে"
+                buildMsgError = false
+            } catch (e: Exception) {
+                buildMsg = e.message
+                buildMsgError = true
+            } finally {
+                busyRunId = null
+            }
+        }
+    }
+
+    /** সবচেয়ে নতুন [keep] টি সম্পন্ন বিল্ড রেখে বাকিগুলো মোছে */
+    fun cleanOldRuns(keep: Int = 3) {
+        val api = actionsApi() ?: return
+        if (busyRunId != null) return
+        val victims = runs.filter { it.status == "completed" }.drop(keep)
+        if (victims.isEmpty()) return
+        busyRunId = -1L
+        viewModelScope.launch {
+            var n = 0
+            try {
+                for (r in victims) {
+                    api.deleteRun(r.id)
+                    n++
+                }
+                buildMsg = "$n টি পুরনো বিল্ড মুছে ফেলা হয়েছে"
+                buildMsgError = false
+            } catch (e: Exception) {
+                buildMsg = "$n টি মুছে ফেলা হয়েছে, তারপর ব্যর্থ: ${e.message}"
+                buildMsgError = true
+            } finally {
+                busyRunId = null
+                refreshRuns(silent = true)
+            }
+        }
+    }
+
+    fun rerun(run: RunInfo) {
+        val api = actionsApi() ?: return
+        if (busyRunId != null) return
+        busyRunId = run.id
+        viewModelScope.launch {
+            try {
+                api.rerun(run.id)
+                buildMsg = "আবার বিল্ড শুরু হয়েছে"
+                buildMsgError = false
+                delay(1500)
+            } catch (e: Exception) {
+                buildMsg = e.message
+                buildMsgError = true
+            } finally {
+                busyRunId = null
+                refreshRuns(silent = true)
+            }
+        }
+    }
+
+    fun deleteApk(f: File) {
+        f.delete()
+        loadApkFiles()
+        buildMsg = "${f.name} মুছে ফেলা হয়েছে"
+        buildMsgError = false
+    }
+
+    fun deleteAllApks() {
+        apkDir().listFiles()?.forEach { it.delete() }
+        loadApkFiles()
+        buildMsg = "সব APK মুছে ফেলা হয়েছে"
+        buildMsgError = false
+    }
+
     fun verifyToken() {
         val t = token.trim()
         if (t.isEmpty()) return
@@ -144,6 +338,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val login = fetchLogin(t)
                 account = login
+                if (rememberToken) {
+                    Accounts.save(securePrefs, login, t)
+                    refreshAccounts()
+                }
                 if (repoInput.isBlank()) repoInput = "$login/"
             } catch (e: Exception) {
                 account = null
@@ -179,7 +377,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 scanInfo = withContext(Dispatchers.IO) {
                     val root = DocumentFile.fromTreeUri(app, uri)
                         ?: throw GitHubException("ফোল্ডার খোলা যায়নি")
-                    val r = scanFolderTree(root, subDir.trim().trim('/'), parseExcludes())
+                    val r = scanFolderTree(root, subDir.trim().trim('/'), parseExcludes(), skipWorkflows)
                     ScanInfo(
                         count = r.files.size,
                         bytes = r.files.sumOf { it.size },
@@ -216,6 +414,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .putBoolean("rememberToken", rememberToken)
             .putBoolean("createRepo", createRepo)
             .putBoolean("privateRepo", privateRepo)
+            .putBoolean("clearAfterPush", clearAfterPush)
+            .putBoolean("skipWorkflows", skipWorkflows)
             .putString("folderUri", folderUri?.toString())
             .apply()
         securePrefs?.edit()?.putString("token", if (rememberToken) token else "")?.apply()
@@ -229,47 +429,84 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             logs += "⚠️ টোকেন, রিপো (owner/repo) ও ব্রাঞ্চ ঠিকমতো দিন"
             return
         }
+        if (UploadHub.running) return
         savePrefs()
-        running = true
-        done = 0
-        total = 0
-        resultUrl = null
-        logs.clear()
+        UploadHub.done = 0
+        UploadHub.total = 0
+        UploadHub.resultUrl = null
+        UploadHub.logs.clear()
 
-        job = viewModelScope.launch {
-            try {
-                val app = getApplication<Application>()
-                val root = DocumentFile.fromTreeUri(app, uri)
-                    ?: throw GitHubException("ফোল্ডার খোলা যায়নি, আবার বাছাই করুন")
-                val cfg = UploadConfig(
-                    token = token.trim(),
-                    owner = repoPair.first,
-                    repo = repoPair.second,
-                    branch = branch.trim(),
-                    message = message.ifBlank { "Upload via Git Folder Uploader" },
-                    subDir = subDir.trim(),
-                    excludes = parseExcludes(),
-                    createRepo = createRepo,
-                    privateRepo = privateRepo,
-                )
-                resultUrl = GitHubUploader(
-                    resolver = app.contentResolver,
-                    cfg = cfg,
-                    log = { logs += it },
-                    progress = { d, t -> done = d; total = t },
-                ).run(root)
-            } catch (e: CancellationException) {
-                logs += "⛔ বাতিল করা হয়েছে (যে ফাইলগুলো আপলোড হয়েছে সেগুলো কমিট হয়নি)"
-                throw e
-            } catch (e: Exception) {
-                logs += "❌ ${e.message}"
-            } finally {
-                running = false
-            }
-        }
+        UploadHub.pendingCfg = UploadConfig(
+            token = token.trim(),
+            owner = repoPair.first,
+            repo = repoPair.second,
+            branch = branch.trim(),
+            message = message.ifBlank { "Upload via Git Folder Uploader" },
+            subDir = subDir.trim(),
+            excludes = parseExcludes(),
+            createRepo = createRepo,
+            privateRepo = privateRepo,
+            skipWorkflows = skipWorkflows,
+        )
+        UploadHub.pendingUri = uri
+        UploadHub.pendingClearAfter = clearAfterPush
+        UploadHub.running = true
+        UploadService.start(getApplication())
     }
 
     fun cancel() {
-        job?.cancel()
+        UploadService.cancel()
+    }
+
+    /**
+     * লগআউট: টোকেন ফোন থেকে মুছে ফেলে।
+     * clearAll = true হলে রিপো, ব্রাঞ্চ, ফোল্ডার ও সব সেভ করা সেটিংসও মুছে যায়।
+     * GitHub-এর অ্যাকাউন্ট বা রিপোতে কিছু বদলায় না।
+     */
+    fun logout(clearAll: Boolean) {
+        if (UploadHub.running) return
+        val oldToken = token.trim()
+        val lastLogin = account
+        token = ""
+        account = null
+        tokenError = null
+        repos = emptyList()
+        runs = emptyList()
+        runsError = null
+        buildMsg = null
+        securePrefs?.edit()?.remove("token")?.apply()
+        if (clearAll) Accounts.clear(securePrefs) else {
+            val a = account ?: lastLogin
+            if (a != null) Accounts.remove(securePrefs, a)
+            if (oldToken.isNotBlank()) Accounts.removeByToken(securePrefs, oldToken)
+        }
+        refreshAccounts()
+
+        if (clearAll) {
+            folderUri?.let {
+                try {
+                    getApplication<Application>().contentResolver
+                        .releasePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (_: Exception) {
+                }
+            }
+            folderUri = null
+            folderName = ""
+            scanInfo = null
+            repoInput = ""
+            branch = "main"
+            message = "Upload via Git Folder Uploader"
+            subDir = ""
+            excludes = ".git, node_modules, build, .gradle, .idea, .DS_Store"
+            createRepo = false
+            privateRepo = true
+            skipWorkflows = false
+            rememberToken = true
+            UploadHub.logs.clear()
+            UploadHub.resultUrl = null
+            UploadHub.done = 0
+            UploadHub.total = 0
+            prefs.edit().clear().putBoolean("clearAfterPush", clearAfterPush).apply()
+        }
     }
 }
