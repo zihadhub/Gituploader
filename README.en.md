@@ -116,6 +116,17 @@ Create a repo on GitHub (private is fine).
 
 ---
 
+## 📦 APK in Releases
+
+After every successful build, the workflow automatically creates a new release in the repo's **Releases** section (tags `v1`, `v2`, `v3`…) and attaches the APK.
+
+- Where to find it: **Releases** on the right side of the repo page (scroll down on a phone), or `repo-link/releases`.
+- Download `GitFolderUploader-vN.apk` straight from there and install it. No unzipping needed.
+- For a private repo only you (when logged in) can see and download it. To share it with others, the repo has to be public.
+- Re-running a build replaces the APK on the same tag.
+- Delete old releases from GitHub's Releases page when you don't need them.
+
+
 ## 🔑 Creating an access token
 
 GitHub → **Settings → Developer settings → Personal access tokens**
